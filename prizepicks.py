@@ -126,4 +126,3 @@ def save_lines_csv(sport):
 
 if __name__ == '__main__':
     save_lines_csv('LoL')
-    save_lines_csv('CS2')
