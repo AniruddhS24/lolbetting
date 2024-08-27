@@ -1,9 +1,6 @@
 import numpy as np
 import pandas as pd
 from datetime import datetime
-import matplotlib.pyplot as plt
-import montecarlo
-import labels
 
 class FeatureExtractor:
     def __init__(self, df, game_desc, window_size=None, values_only=True):
@@ -57,5 +54,6 @@ class FeatureExtractor:
         all_games_fltr = all_games[all_games['teamname'] != self.game_desc.opp_teamname]
         all_games_fltr_pos = all_games_fltr[all_games_fltr['position'] == self.game_desc.position]
         return all_games_fltr_pos['kills'].dropna().mean()
-
-
+    
+    # TODO(notes from neer):
+    # region matters, north america vs korea

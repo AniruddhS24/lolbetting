@@ -5,8 +5,7 @@ import pandas as pd
 from scipy.stats import poisson
 from datetime import datetime
 import data
-import montecarlo
-import labels
+import models
 from features import FeatureExtractor
 
 st.set_page_config(page_title="Poisson Distribution CDF", layout="centered")
@@ -21,7 +20,7 @@ def load_data():
     df = data.read_data(DATA_PATH)
     if not FEATURES_PATH:
         # logger.info(f'Extracting features: {FEATURES}')
-        X, Y = data.make_dataset(df, datetime(2024, 7, 10), datetime.now(), FEATURES, labels.kills, './features.csv')
+        X, Y = data.make_dataset(df, datetime(2024, 7, 10), datetime.now(), FEATURES, 'kills', './features.csv')
     else:
         # logger.info(f'Loading precomputed features: {FEATURES}')
         X, Y = data.load_dataset(FEATURES_PATH, FEATURES, 'kills')
@@ -31,14 +30,14 @@ def load_data():
 @st.cache_resource
 def train_model(X, Y):
     # logger.info('Running Montecarlo simulations to fit model...')
-    model = montecarlo.PoissonRegression(X, Y)
+    model = models.PoissonRegression(X, Y)
     return model
 
 # Function to perform inference using the trained model
 def inference(df, game):
     # Replace this logic with your actual inference logic
     fe = FeatureExtractor(df, game)
-    lam = model.predict(np.array([[fe.extract(f) for f in FEATURES]]))[0]*3
+    lam = model.predict(np.array([[fe.extract(f) for f in FEATURES]]))[0]
     lam = round(lam, 2)
     return lam
 
@@ -57,7 +56,8 @@ playername = st.selectbox('Player Name', _players)
 teamname = st.selectbox('Team', _teams)
 opponent = st.selectbox('Opponent Team', _teams)
 position = st.selectbox('Select Position', ['top', 'mid', 'bot', 'jng', 'sup'])
-x_val = st.slider('Line:', min_value=0, max_value=14, value=0)
+num_games = st.number_input('Number of Games', step=1, value=1)
+x_val = st.slider('Line:', min_value=0.0, max_value=20.0, value=0.0, step=0.5)
 
 if 'lambda_poisson' not in st.session_state:
     st.session_state.lambda_poisson = 0
@@ -73,7 +73,7 @@ if st.button('Enter'):
         opp_teamname=opponent,
         position=position
     )
-    st.session_state.lambda_poisson = inference(df, game)
+    st.session_state.lambda_poisson = inference(df, game)*num_games
 
 # User input for x after lambda is calculated
 
@@ -101,22 +101,8 @@ base = alt.Chart(data).mark_line(point=True).encode(
     title=f'Poisson Kill Distribution (λ = {lambda_poisson})'
 )
 
-# Highlight the area under the curve
-highlight = alt.Chart(highlight_data).mark_area(
-    opacity=0.3, color='red'
-).encode(
-    x='X:Q',
-    y='PMF:Q'
-)
-
-# Vertical line for the selected X value
-vertical_line = alt.Chart(pd.DataFrame({'X': [x_val], 'PMF': [0], 'PMF_end': [poisson.pmf(x_val, lambda_poisson)]})).mark_rule(color='red', strokeDash=[5, 5]).encode(
-    x='X:Q',
-    y='PMF:Q',
-    y2='PMF_end:Q'
-)
-
-# Combine all layers
+highlight = alt.Chart(pd.DataFrame({'X': np.append(np.arange(0, int(np.floor(x_val)) + 1), x_val), 'PMF': np.append(poisson.pmf(np.arange(0, int(np.floor(x_val)) + 1), lambda_poisson), poisson.pmf(int(np.floor(x_val)), lambda_poisson) + (x_val - np.floor(x_val)) * (poisson.pmf(int(np.ceil(x_val)), lambda_poisson) - poisson.pmf(int(np.floor(x_val)), lambda_poisson)))})).mark_area(opacity=0.3, color='red').encode(x='X:Q', y='PMF:Q')
+vertical_line = alt.Chart(pd.DataFrame({'X': [x_val], 'PMF': [0], 'PMF_end': [poisson.pmf(int(np.floor(x_val)), lambda_poisson) + (x_val - np.floor(x_val)) * (poisson.pmf(int(np.ceil(x_val)), lambda_poisson) - poisson.pmf(int(np.floor(x_val)), lambda_poisson))]})).mark_rule(color='red', strokeDash=[5, 5]).encode(x='X:Q', y='PMF:Q', y2='PMF_end:Q')
 final_chart = base + highlight + vertical_line
 
 st.altair_chart(final_chart)

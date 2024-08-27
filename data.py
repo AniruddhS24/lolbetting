@@ -6,6 +6,7 @@ import numpy as np
 import os
 
 from features import FeatureExtractor
+from labels import LabelExtractor
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -33,11 +34,11 @@ def _game_from_df(df, df_row):
         position=df_row['position'],
     )
 
-def make_dataset(df, start_date, end_date, features, label_func, save_path=None, save_freq=1000):
+def make_dataset(df, start_date, end_date, features, label, save_path=None, save_freq=1000):
     X = []
     y = []
     mod_df = []
-
+    le = LabelExtractor()
     for i, game in df.iterrows():
         try:
             if start_date > game['date'] or game['date'] > end_date:
@@ -49,7 +50,7 @@ def make_dataset(df, start_date, end_date, features, label_func, save_path=None,
                 continue
             
             X.append(preds)
-            y.append(label_func(game))
+            y.append(le.extract(game, label))
             game_dict = game.to_dict()
             game_dict.update({features[j]: preds[j] for j in range(len(preds))})
             game_dict['label'] = y[-1]
