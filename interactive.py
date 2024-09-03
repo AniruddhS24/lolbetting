@@ -10,9 +10,9 @@ from features import FeatureExtractor
 
 st.set_page_config(page_title="Poisson Distribution CDF", layout="centered")
 
-DATA_PATH = '2024_LoL_esports_match_data_from_OraclesElixir.csv'
-FEATURES_PATH = './features.csv'
-FEATURES = ['agt', 'apg', 'csdiffat10', 'opp_gives_up_kills']
+DATA_PATH = './data/2024_LoL_esports_match_data_from_OraclesElixir.csv'
+FEATURES_PATH = './checkpoints/checkpoint_20240901_234012/features.csv'
+FEATURES = data.get_features()
 
 # Placeholder function to load data
 @st.cache_data
@@ -20,10 +20,10 @@ def load_data():
     df = data.read_data(DATA_PATH)
     if not FEATURES_PATH:
         # logger.info(f'Extracting features: {FEATURES}')
-        X, Y = data.make_dataset(df, datetime(2024, 7, 10), datetime.now(), FEATURES, 'kills', './features.csv')
+        X, Y = data.compute_features(df, datetime(2024, 7, 10), datetime.now(), FEATURES, 'kills', './features.csv')
     else:
         # logger.info(f'Loading precomputed features: {FEATURES}')
-        X, Y = data.load_dataset(FEATURES_PATH, FEATURES, 'kills')
+        X, Y = data.load_dataset(FEATURES_PATH, FEATURES)
     return df, X, Y
 
 # Placeholder function to train a model
@@ -37,7 +37,8 @@ def train_model(X, Y):
 def inference(df, game):
     # Replace this logic with your actual inference logic
     fe = FeatureExtractor(df, game)
-    lam = model.predict(np.array([[fe.extract(f) for f in FEATURES]]))[0]
+    input_nparr = np.array([[fe.extract(f) for f in FEATURES]])
+    lam = model.predict(input_nparr)[0]
     lam = round(lam, 2)
     return lam
 
@@ -57,7 +58,7 @@ teamname = st.selectbox('Team', _teams)
 opponent = st.selectbox('Opponent Team', _teams)
 position = st.selectbox('Select Position', ['top', 'mid', 'bot', 'jng', 'sup'])
 num_games = st.number_input('Number of Games', step=1, value=1)
-x_val = st.slider('Line:', min_value=0.0, max_value=20.0, value=0.0, step=0.5)
+x_val = st.slider('Line:', min_value=0.0, max_value=25.0, value=0.0, step=0.5)
 
 if 'lambda_poisson' not in st.session_state:
     st.session_state.lambda_poisson = 0
@@ -79,17 +80,37 @@ if st.button('Enter'):
 
 lambda_poisson = st.session_state.lambda_poisson
 # Calculate CDF
-cdf_val = poisson.cdf(x_val, lambda_poisson)
+under_val = x_val - 0.5
+over_val = x_val + 0.5
+
+under_prob = poisson.cdf(under_val, lambda_poisson) if under_val >= 0 else 0
+push_prob = poisson.pmf(x_val, lambda_poisson)
+over_prob = 1 - poisson.cdf(over_val, lambda_poisson)
 
 # Display the calculated lambda and CDF value
-# st.markdown(f"<h3 style='text-align: center;'>Calculated λ = {lambda_poisson:.2f}</h3>", unsafe_allow_html=True)
-st.markdown(f"<h3 style='text-align: center;'>P(kills < {x_val}) = {cdf_val*100:.2f}%</h3>", unsafe_allow_html=True)
+st.markdown(f"""
+    <div style='text-align: center;'>
+        <p style='color: red;'><strong>P(kills < {x_val})</strong>: {under_prob*100:.2f}%</p>
+        <p style='color: gray;'><strong>P(kills == {x_val})</strong>: {push_prob*100:.2f}%</p>
+        <p style='color: green;'><strong>P(kills > {x_val})</strong>: {over_prob*100:.2f}%</p>
+    </div>
+""", unsafe_allow_html=True)
 
 # Prepare data for Altair plot
 x = np.arange(0, 20)
 pmf = poisson.pmf(x, lambda_poisson)
 data = pd.DataFrame({'X': x, 'PMF': pmf})
-highlight_data = pd.DataFrame({'X': np.arange(0, x_val + 1), 'PMF': poisson.pmf(np.arange(0, x_val + 1), lambda_poisson)})
+
+# Highlight areas
+under_df = pd.DataFrame({'X': np.arange(0, int(np.floor(under_val) + 1)), 'PMF': poisson.pmf(np.arange(0, int(np.floor(under_val) + 1)), lambda_poisson)})
+push_df = pd.DataFrame({'X': np.arange(int(np.floor(under_val) + 1), int(np.ceil(over_val))), 'PMF': poisson.pmf(np.arange(int(np.floor(under_val) + 1), int(np.ceil(over_val))), lambda_poisson)})
+over_df = pd.DataFrame({'X': np.arange(int(np.ceil(over_val)), 20), 'PMF': poisson.pmf(np.arange(int(np.ceil(over_val)), 20), lambda_poisson)})
+
+# Add interpolated points for push highlight
+push_interpolated = pd.DataFrame({
+    'X': np.concatenate([np.arange(x_val - 0.5, x_val + 0.5, 0.01), [x_val]]),
+    'PMF': np.concatenate([poisson.pmf(np.arange(x_val - 0.5, x_val + 0.5, 0.01), lambda_poisson), [push_prob]])
+})
 
 # Base plot
 base = alt.Chart(data).mark_line(point=True).encode(
@@ -98,11 +119,18 @@ base = alt.Chart(data).mark_line(point=True).encode(
 ).properties(
     width=600,
     height=400,
-    title=f'Poisson Kill Distribution (λ = {lambda_poisson})'
+    title=f'Poisson Kill Distribution (λ = {lambda_poisson:.2f})'
 )
 
-highlight = alt.Chart(pd.DataFrame({'X': np.append(np.arange(0, int(np.floor(x_val)) + 1), x_val), 'PMF': np.append(poisson.pmf(np.arange(0, int(np.floor(x_val)) + 1), lambda_poisson), poisson.pmf(int(np.floor(x_val)), lambda_poisson) + (x_val - np.floor(x_val)) * (poisson.pmf(int(np.ceil(x_val)), lambda_poisson) - poisson.pmf(int(np.floor(x_val)), lambda_poisson)))})).mark_area(opacity=0.3, color='red').encode(x='X:Q', y='PMF:Q')
+# Area highlights
+under_highlight = alt.Chart(under_df).mark_area(opacity=0.3, color='red').encode(x='X:Q', y='PMF:Q')
+push_highlight = alt.Chart(push_interpolated).mark_area(opacity=0.3, color='gray').encode(x='X:Q', y='PMF:Q')
+over_highlight = alt.Chart(over_df).mark_area(opacity=0.3, color='green').encode(x='X:Q', y='PMF:Q')
+
+# Vertical line
 vertical_line = alt.Chart(pd.DataFrame({'X': [x_val], 'PMF': [0], 'PMF_end': [poisson.pmf(int(np.floor(x_val)), lambda_poisson) + (x_val - np.floor(x_val)) * (poisson.pmf(int(np.ceil(x_val)), lambda_poisson) - poisson.pmf(int(np.floor(x_val)), lambda_poisson))]})).mark_rule(color='red', strokeDash=[5, 5]).encode(x='X:Q', y='PMF:Q', y2='PMF_end:Q')
-final_chart = base + highlight + vertical_line
+
+# Combine plots
+final_chart = base + under_highlight + push_highlight + over_highlight + vertical_line
 
 st.altair_chart(final_chart)

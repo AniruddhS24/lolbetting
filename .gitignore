@@ -1,2 +1,5 @@
 venv/
 *.csv
+checkpoints/
+data/
+.DS_Store

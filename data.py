@@ -2,13 +2,13 @@ from dataclasses import dataclass
 from datetime import datetime
 import logging
 import pandas as pd
-import numpy as np
 import os
+import numpy as np
 
-from features import FeatureExtractor
+from features import FeatureExtractor, NotEnoughDataException
 from labels import LabelExtractor
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -34,48 +34,85 @@ def _game_from_df(df, df_row):
         position=df_row['position'],
     )
 
-def make_dataset(df, start_date, end_date, features, label, save_path=None, save_freq=1000):
-    X = []
-    y = []
+def compute_features(df, start_date, end_date, label, features=None, save_freq=25000):
     mod_df = []
     le = LabelExtractor()
-    for i, game in df.iterrows():
+    ct = 0
+    checkpoint_path = os.path.join(os.getcwd(), f"checkpoints/checkpoint_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    os.makedirs(checkpoint_path, exist_ok=True)
+    for _, game in df.iterrows():
         try:
             if start_date > game['date'] or game['date'] > end_date:
                 continue
-            fe = FeatureExtractor(df, _game_from_df(df, game))
-            preds = [fe.extract(f) for f in features]
-            if np.isnan(preds).any(axis=0):
-                logger.warn(f"MISSING DATA {game['gameid']} {game['playername']} ")
+            if game['playername'] == 'unknown player':
+                logging.warn("Unknown player, skipping...")
                 continue
-            
-            X.append(preds)
-            y.append(le.extract(game, label))
+            fe = FeatureExtractor(df, _game_from_df(df, game))
+            if not features:
+                features = list(fe.name2func.keys())
+            try:
+                preds = [fe.extract(f) for f in features]
+            except NotEnoughDataException:
+                logging.warn(f"Skipping. Not enough data for player: {game['playername']} date: {game['date']} gameid: {game['gameid']}")
+                continue
             game_dict = game.to_dict()
             game_dict.update({features[j]: preds[j] for j in range(len(preds))})
-            game_dict['label'] = y[-1]
+            game_dict['label'] = le.extract(game, label)
             mod_df.append(game_dict)
 
-            logger.info(f"ADDED {game['gameid']} {game['playername']} ")
-            if save_path and i > 0 and i % 1000 == 0:
-                checkpoint_path = f'{os.path.splittext(save_path)[0]}_{datetime.now().toisostring()}_{i}.csv'
-                logger.info(f"SAVING features to {checkpoint_path}")
-                pd.DataFrame(mod_df).to_csv(checkpoint_path)
+            logger.info(f"Extracted features for player: {game['playername']} date: {game['date']} gameid: {game['gameid']}")
+            ct += 1
+            if ct > 0 and ct % save_freq == 0:
+                cpath = os.path.join(checkpoint_path, f"features_{ct}.csv")
+                logger.info(f"Saving features to disk: {cpath}")
+                pd.DataFrame(mod_df).to_csv(cpath)
+                mod_df.clear()
         except Exception as e:
-            logger.error(f"ERROR {e}")
+            logger.error(f"{e}")
             continue
-    pd.DataFrame(mod_df).to_csv(save_path)
-    return np.array(X), np.array(y)
+    pd.DataFrame(mod_df).to_csv(os.path.join(checkpoint_path, f"features_{ct}.csv"))
+    logging.info("Combining checkpoint files...")
+    dfs = []
+    for checkpt_file in [f for f in os.listdir(checkpoint_path) if f.endswith('.csv')]:
+        dfs.append(pd.read_csv(os.path.join(checkpoint_path, checkpt_file)))
+    all_features = pd.concat(dfs, ignore_index=True)
+    all_features.to_csv(os.path.join(checkpoint_path, f"features.csv"))
+    logging.info(f"Saved features master file")
 
-def load_dataset(features_path, features, label):
-    df = pd.read_csv(features_path)
-    X = df[features].values
-    Y = df[label].values
-    return X, Y
+def update_master_features(features_path, features):
+    new_features_df = pd.read_csv(features_path)[features + ['label']]
+    master_file = "./master_features.csv"
+    if os.path.exists(master_file):
+        master_df = pd.read_csv(master_file)
+    else:
+        master_df = pd.DataFrame(columns=features + ['label'])
+    updated_master_df = pd.concat([master_df, new_features_df]).drop_duplicates(subset=['gameid', 'playername'], keep='last')
+    updated_master_df.to_csv(master_file, index=False)
+
+def load_dataset(features_path, features):
+    df = pd.read_csv(features_path)[features + ['label']]
+    # print(df.isna().sum().sort_values(ascending=False).head(20))
+    df = df.dropna()
+    df = df[~np.isinf(df).any(axis=1)]
+    X, Y = df[features].values, df['label'].values
+    return X, Y 
+
+def get_features(features_path='./features.txt'):
+    with open(features_path, 'r') as f:
+        features = f.read().split('\n')
+    return features
+
+def parse_date(date_str):
+    for fmt in ("%m/%d/%y %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return pd.to_datetime(date_str, format=fmt)
+        except ValueError:
+            continue
+    return pd.NaT
 
 def read_data(path):
     df = pd.read_csv(path)
-    df['date'] = pd.to_datetime(df['date'], format='%m/%d/%y %H:%M')
+    df['date'] = df['date'].apply(parse_date)
     df = df.dropna(subset=['playername', 'date'])
     df.sort_values(by='date', inplace=True)
     return df
